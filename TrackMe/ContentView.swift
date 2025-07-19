@@ -20,8 +20,8 @@ struct AppSegmentCount: Identifiable {
 
 struct KeyPressSummary: Identifiable {
     let id = UUID()
-    let minute: Date  // start of minute interval
-    let count: Int    // number of key presses in that minute
+    let day: Date  // represents start of day interval
+    let count: Int    // number of key presses in that day
 }
 
 struct AppUsage: Identifiable {
@@ -117,16 +117,16 @@ struct ChartDataService {
                      .sorted(by: { $0.count > $1.count })
     }
 
-    /// Count key presses per minute
-    static func countKeyPressesPerMinute(keyLogs: [KeyLog]) -> [KeyPressSummary] {
+    /// Count key presses per day
+    static func countKeyPressesPerDay(keyLogs: [KeyLog]) -> [KeyPressSummary] {
         let calendar = Calendar.current
         let grouped = Dictionary(grouping: keyLogs) { event in
-            calendar.date(bySetting: .second, value: 0, of: event.timestamp)!  // round down to minute
+            calendar.startOfDay(for: event.timestamp)  // round down to start of day
         }
-        return grouped.map { minute, events in
-            KeyPressSummary(minute: minute, count: events.count)
+        return grouped.map { day, events in
+            KeyPressSummary(day: day, count: events.count)
         }
-        .sorted(by: { $0.minute < $1.minute })
+        .sorted(by: { $0.day < $1.day })
     }
     
     /// Compute total usage time per app by walking the sequence of AppLog entries.
@@ -186,8 +186,18 @@ final class ContentViewModel: ObservableObject {
     }
 
     func loadData() async {
-        isLoading = true
-        defer { isLoading = false }
+        await MainActor.run {
+            isLoading = true
+        }
+        
+        // Add a small delay to ensure loading state is visible
+        try? await Task.sleep(nanoseconds: 100_000_000) // 0.1 seconds
+        
+        defer { 
+            Task { @MainActor in
+                isLoading = false
+            }
+        }
 
         let frame = selectedFrame
         var fromDate: Date? = nil, toDate: Date? = nil
@@ -203,9 +213,11 @@ final class ContentViewModel: ObservableObject {
         if let cachedSegs = segmentCache[key],
            let cachedSumm = summaryCache[key],
            let usages = usageCache[key]{
-            segmentCounts = cachedSegs
-            keySummaries = cachedSumm
-            usageStats = usages
+            await MainActor.run {
+                segmentCounts = cachedSegs
+                keySummaries = cachedSumm
+                usageStats = usages
+            }
             return
         }
 
@@ -251,7 +263,7 @@ final class ContentViewModel: ObservableObject {
         
         // compute
         let segs = ChartDataService.countKeyPressesByApp(appLogs: extendedAppLogs, keyLogs: keyLogs)
-        let summ = ChartDataService.countKeyPressesPerMinute(keyLogs: keyLogs)
+        let summ = ChartDataService.countKeyPressesPerDay(keyLogs: keyLogs)  // Changed from countKeyPressesPerMinute
         let usages = ChartDataService.usageTimeByApp(appLogs: extendedAppLogs)
 
         // cache them
@@ -260,9 +272,11 @@ final class ContentViewModel: ObservableObject {
         usageCache[key] = usages
         
         // publish
-        segmentCounts = segs
-        keySummaries = summ
-        usageStats = usages
+        await MainActor.run {
+            segmentCounts = segs
+            keySummaries = summ
+            usageStats = usages
+        }
     }
 
     func shiftCurrentDay(by days: Int) {
@@ -364,95 +378,101 @@ struct ContentView: View {
                 }
                 
                 if viewModel.isLoading {
-                    ProgressView().frame(height: 200)
+                    VStack(spacing: 16) {
+                        ProgressView()
+                            .scaleEffect(1.5)
+                    }
+                    .frame(width: 1100, height: 500)
                 } else {
-                    HStack(alignment: .top, spacing: 16) {
-                        Chart {
-                            ForEach(viewModel.usageStats) { item in
-                                SectorMark(
-                                    angle: .value("Duration", item.duration),
-                                    innerRadius: .ratio(0.4),
-                                    outerRadius: .ratio(1.0)
-                                )
-                                .foregroundStyle(Color.uniqueColor(for: item.appName))
-                                .annotation(position: .overlay, alignment: .center) {
-                                    let pct = item.duration / totalDuration * 100
-                                    if pct >= pctThreshold {
-                                        VStack(spacing: 2) {
-                                            Text(Time.formatDuration(seconds: item.duration))
-                                                .font(.caption2)
-                                            Text(String(format: "%.1f%%", pct))
-                                                .font(.caption2)
-                                                .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 100) {
+                        HStack(alignment: .top, spacing: 100) {
+                            HStack(alignment: .top, spacing: 16) {
+                                Chart {
+                                    ForEach(viewModel.usageStats) { item in
+                                        SectorMark(
+                                            angle: .value("Duration", item.duration),
+                                            innerRadius: .ratio(0.4),
+                                            outerRadius: .ratio(1.0)
+                                        )
+                                        .foregroundStyle(Color.uniqueColor(for: item.appName))
+                                        .annotation(position: .overlay, alignment: .center) {
+                                            let pct = item.duration / totalDuration * 100
+                                            if pct >= pctThreshold {
+                                                VStack(spacing: 2) {
+                                                    Text(Time.formatDuration(seconds: item.duration))
+                                                        .font(.caption2)
+                                                    Text(String(format: "%.1f%%", pct))
+                                                        .font(.caption2)
+                                                        .foregroundStyle(.secondary)
+                                                }
+                                            }
                                         }
                                     }
                                 }
-                            }
-                        }
-                        .frame(width: 450, height: 450)
-                        .chartLegend(.hidden)
-                        .overlay {
-                            VStack(spacing: 4) {
-                                Text("Time")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                Text(totalDurationString)
-                                    .font(.title2)
-                                    .bold()
-                            }
-                        }
-                        
-                        VStack(alignment: .leading, spacing: 8) {
-                            Button {
-                                isDetailsSheetPresented = true
-                            } label: {
-                                Image(systemName: "info.circle")
-                            }
-                            .help("View detailed app usage")
-                            
-                            ForEach(viewModel.usageStats) { item in
-                                let pct = item.duration / totalDuration * 100
-                                if pct >= pctThreshold {
-                                    HStack(spacing: 6) {
-                                        Circle()
-                                            .fill(Color.uniqueColor(for: item.appName))
-                                            .frame(width: 12, height: 12)
-                                        Text(item.appName)
+                                .frame(width: 450, height: 450)
+                                .chartLegend(.hidden)
+                                .overlay {
+                                    VStack(spacing: 4) {
+                                        Text("Time")
                                             .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                        Text(totalDurationString)
+                                            .font(.title2)
+                                            .bold()
                                     }
+                                }
+                                
+                                Button {
+                                    isDetailsSheetPresented = true
+                                } label: {
+                                    Image(systemName: "info.circle")
+                                }
+                                .help("View detailed app usage")
+                            }
+                            
+                            Chart {
+                                ForEach(Array(viewModel.segmentCounts.prefix(10))) { item in
+                                    BarMark(
+                                        x: .value("Keys", item.count),
+                                        y: .value("App", item.appName)
+                                    )
+                                    .foregroundStyle(Color.uniqueColor(for: item.appName))
+                                    .annotation(position: .trailing) {
+                                        Text("\(item.count)")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                            .chartXAxis(.hidden)
+                            .frame(width: 500, height: 450)
+                        }
+                    
+                        if viewModel.selectedFrame != .day {
+                            Chart {
+                                ForEach(viewModel.keySummaries) { summary in
+                                    BarMark(
+                                        x: .value("Date", summary.day, unit: .day),
+                                        y: .value("Count", summary.count)
+                                    )
+                                }
+                            }
+                            .frame(height: 400)
+                            .chartXAxis {
+                                AxisMarks(values: .stride(by: .day)) { value in
+                                    AxisGridLine()
+                                    AxisTick()
+                                    AxisValueLabel(format: .dateTime.day().month(.abbreviated))
                                 }
                             }
                         }
                     }
-                    
-                    Chart {
-                        ForEach(Array(viewModel.segmentCounts.prefix(10))) { item in
-                            BarMark(
-                                x: .value("Keys", item.count),
-                                y: .value("App", item.appName)
-                            )
-                            .annotation(position: .trailing) {
-                                Text("\(item.count)")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                    .chartXAxis(.hidden)
-                    .frame(height: 300)
-                    
-                    Chart {
-                        ForEach(viewModel.keySummaries) { summary in
-                            BarMark(
-                                x: .value("Time", summary.minute, unit: .minute),
-                                y: .value("Count", summary.count)
-                            )
-                        }
-                    }
-                    .frame(height: 300)
                 }
             }
-            .padding()
+            .frame(maxWidth: 1050) // Set maximum width to prevent overflow
+            .padding(.horizontal, 40) // Add horizontal padding
+            .padding(.vertical, 40) // Add vertical padding
+            .frame(maxWidth: .infinity) // Center the content
         }
         .navigationTitle("")
         .toolbar {
