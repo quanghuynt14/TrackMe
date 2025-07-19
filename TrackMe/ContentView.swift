@@ -317,143 +317,143 @@ struct ContentView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Picker(selection: $viewModel.selectedFrame, label: EmptyView()) {
-                ForEach(TimeFrame.allCases) { frame in
-                    Text(frame.title).tag(frame)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Picker(selection: $viewModel.selectedFrame, label: EmptyView()) {
+                    ForEach(TimeFrame.allCases) { frame in
+                        Text(frame.title).tag(frame)
+                    }
                 }
-            }
-            .pickerStyle(.segmented)
-            .frame(width: 500)
-            .onChange(of: viewModel.selectedFrame) { _, _ in
-                Task { await viewModel.loadData() }
-            }
-
-            if viewModel.selectedFrame == .day {
-                HStack {
-                    Button(action: { viewModel.shiftCurrentDay(by: -1) }) {
-                        Image(systemName: "chevron.left")
-                    }
-
-                    Button("Today") {
-                        viewModel.currentDay = Date()
-                        Task { await viewModel.loadData() }
-                    }
-                    .fontWeight(Calendar.current.isDateInToday(viewModel.currentDay) ? .bold : .regular)
-
-                    Button(action: { viewModel.shiftCurrentDay(by: +1) }) {
-                        Image(systemName: "chevron.right")
-                    }
-                    .disabled(Calendar.current.isDateInToday(viewModel.currentDay))
+                .pickerStyle(.segmented)
+                .frame(width: 500)
+                .onChange(of: viewModel.selectedFrame) { _, _ in
+                    Task { await viewModel.loadData() }
                 }
                 
-                HStack(spacing: 4) {
-                    Text(viewModel.currentDay.formatted(.dateTime.day()))
-                        .font(.largeTitle)
-                        .fontWeight(.bold)
-                    Text(viewModel.currentDay.formatted(.dateTime.month()))
-                        .font(.largeTitle)
-                        .fontWeight(.bold)
-                    Text(viewModel.currentDay.formatted(.dateTime.year()))
+                if viewModel.selectedFrame == .day {
+                    HStack {
+                        Button(action: { viewModel.shiftCurrentDay(by: -1) }) {
+                            Image(systemName: "chevron.left")
+                        }
+                        
+                        Button("Today") {
+                            viewModel.currentDay = Date()
+                            Task { await viewModel.loadData() }
+                        }
+                        .fontWeight(Calendar.current.isDateInToday(viewModel.currentDay) ? .bold : .regular)
+                        
+                        Button(action: { viewModel.shiftCurrentDay(by: +1) }) {
+                            Image(systemName: "chevron.right")
+                        }
+                        .disabled(Calendar.current.isDateInToday(viewModel.currentDay))
+                    }
+                    
+                    HStack(spacing: 4) {
+                        Text(viewModel.currentDay.formatted(.dateTime.day()))
+                            .font(.largeTitle)
+                            .fontWeight(.bold)
+                        Text(viewModel.currentDay.formatted(.dateTime.month()))
+                            .font(.largeTitle)
+                            .fontWeight(.bold)
+                        Text(viewModel.currentDay.formatted(.dateTime.year()))
+                            .font(.largeTitle)
+                    }
+                } else {
+                    Text(viewModel.selectedFrame.displayLabel)
                         .font(.largeTitle)
                 }
-            } else {
-                Text(viewModel.selectedFrame.displayLabel)
-                    .font(.largeTitle)
-            }
-            
-            if viewModel.isLoading {
-                ProgressView().frame(height: 200)
-            } else {
-                HStack(alignment: .top, spacing: 16) {
-                    Chart {
-                        ForEach(viewModel.usageStats) { item in
-                            SectorMark(
-                                angle: .value("Duration", item.duration),
-                                innerRadius: .ratio(0.4),
-                                outerRadius: .ratio(1.0)
-                            )
-                            .foregroundStyle(Color.uniqueColor(for: item.appName))
-                            .annotation(position: .overlay, alignment: .center) {
+                
+                if viewModel.isLoading {
+                    ProgressView().frame(height: 200)
+                } else {
+                    HStack(alignment: .top, spacing: 16) {
+                        Chart {
+                            ForEach(viewModel.usageStats) { item in
+                                SectorMark(
+                                    angle: .value("Duration", item.duration),
+                                    innerRadius: .ratio(0.4),
+                                    outerRadius: .ratio(1.0)
+                                )
+                                .foregroundStyle(Color.uniqueColor(for: item.appName))
+                                .annotation(position: .overlay, alignment: .center) {
+                                    let pct = item.duration / totalDuration * 100
+                                    if pct >= pctThreshold {
+                                        VStack(spacing: 2) {
+                                            Text(Time.formatDuration(seconds: item.duration))
+                                                .font(.caption2)
+                                            Text(String(format: "%.1f%%", pct))
+                                                .font(.caption2)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        .frame(width: 450, height: 450)
+                        .chartLegend(.hidden)
+                        .overlay {
+                            VStack(spacing: 4) {
+                                Text("Time")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Text(totalDurationString)
+                                    .font(.title2)
+                                    .bold()
+                            }
+                        }
+                        
+                        VStack(alignment: .leading, spacing: 8) {
+                            Button {
+                                isDetailsSheetPresented = true
+                            } label: {
+                                Image(systemName: "info.circle")
+                            }
+                            .help("View detailed app usage")
+                            
+                            ForEach(viewModel.usageStats) { item in
                                 let pct = item.duration / totalDuration * 100
                                 if pct >= pctThreshold {
-                                    VStack(spacing: 2) {
-                                        Text(Time.formatDuration(seconds: item.duration))
-                                            .font(.caption2)
-                                        Text(String(format: "%.1f%%", pct))
-                                            .font(.caption2)
-                                            .foregroundStyle(.secondary)
+                                    HStack(spacing: 6) {
+                                        Circle()
+                                            .fill(Color.uniqueColor(for: item.appName))
+                                            .frame(width: 12, height: 12)
+                                        Text(item.appName)
+                                            .font(.caption)
                                     }
                                 }
                             }
                         }
                     }
-                    .frame(width: 500, height: 500)
-                    .chartLegend(.hidden)
-                    .overlay {
-                        VStack(spacing: 4) {
-                            Text("Time")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Text(totalDurationString)
-                                .font(.title2)
-                                .bold()
-                        }
-                    }
                     
-                    VStack(alignment: .leading, spacing: 8) {
-                        Button {
-                            isDetailsSheetPresented = true
-                        } label: {
-                            Image(systemName: "info.circle")
-                        }
-                        .help("View detailed app usage")
-                        
-                        ForEach(viewModel.usageStats) { item in
-                            let pct = item.duration / totalDuration * 100
-                            if pct >= pctThreshold {
-                                HStack(spacing: 6) {
-                                    Circle()
-                                        .fill(Color.uniqueColor(for: item.appName))
-                                        .frame(width: 12, height: 12)
-                                    Text(item.appName)
-                                        .font(.caption)
-                                }
+                    Chart {
+                        ForEach(Array(viewModel.segmentCounts.prefix(10))) { item in
+                            BarMark(
+                                x: .value("Keys", item.count),
+                                y: .value("App", item.appName)
+                            )
+                            .annotation(position: .trailing) {
+                                Text("\(item.count)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
                             }
                         }
                     }
-                }
-                
-                Spacer()
-                
-                Chart {
-                    ForEach(viewModel.segmentCounts) { item in
-                        BarMark(
-                            x: .value("Keys", item.count),
-                            y: .value("App", item.appName)
-                        )
-                        .annotation(position: .trailing) {
-                            Text("\(item.count)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                    .chartXAxis(.hidden)
+                    .frame(height: 300)
+                    
+                    Chart {
+                        ForEach(viewModel.keySummaries) { summary in
+                            BarMark(
+                                x: .value("Time", summary.minute, unit: .minute),
+                                y: .value("Count", summary.count)
+                            )
                         }
                     }
-                }
-                .chartXAxis(.hidden)
-
-                Spacer()
-                
-                Chart {
-                    ForEach(viewModel.keySummaries) { summary in
-                        BarMark(
-                            x: .value("Time", summary.minute, unit: .minute),
-                            y: .value("Count", summary.count)
-                        )
-                    }
+                    .frame(height: 300)
                 }
             }
+            .padding()
         }
-        .padding()
         .navigationTitle("")
         .toolbar {
             ToolbarItem(placement: .navigation) {
