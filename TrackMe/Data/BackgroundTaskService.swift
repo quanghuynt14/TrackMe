@@ -49,9 +49,6 @@ class BackgroundTaskService {
             let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: Date())!
             try await computationService.computeStatsForDate(yesterday)
             
-            // Also compute any missing historical stats (but not today)
-            try await computationService.computeMissingStats()
-            
             print("✅ Midnight computation completed for yesterday: \(yesterday)")
         } catch {
             print("❌ Midnight computation failed: \(error)")

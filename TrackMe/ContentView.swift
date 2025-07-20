@@ -552,8 +552,6 @@ struct GitHubStyleChart: View {
                 Text("More")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                
-                Spacer()
             }
         }
     }
@@ -647,7 +645,7 @@ struct ContentView: View {
                     }
                     .frame(width: 1100, height: 500)
                 } else {
-                    VStack(alignment: .leading, spacing: 50) {
+                    VStack(alignment: .center, spacing: 50) {
                         HStack(alignment: .top, spacing: 100) {
                             HStack(alignment: .top, spacing: 16) {
                                 Chart {
@@ -710,11 +708,6 @@ struct ContentView: View {
                             .chartXAxis(.hidden)
                             .frame(width: 500, height: 450)
                         }
-                    
-                        VStack(alignment: .leading) {
-                            GitHubStyleChart(keySummaries: viewModel.yearlyKeySummaries)
-                                .frame(height: 200)
-                        }
                     }
                 }
             }
@@ -722,6 +715,15 @@ struct ContentView: View {
             .padding(.horizontal, 40) // Add horizontal padding
             .padding(.vertical, 40) // Add vertical padding
             .frame(maxWidth: .infinity) // Center the content
+            
+            // GitHub chart section - completely outside all constraints
+            HStack {
+                Spacer()
+                GitHubStyleChart(keySummaries: viewModel.yearlyKeySummaries)
+                    .frame(height: 200)
+                Spacer()
+            }
+            .padding(.bottom, 40)
         }
         .navigationTitle("")
         .toolbar {
