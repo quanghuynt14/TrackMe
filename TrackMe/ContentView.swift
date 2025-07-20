@@ -461,6 +461,9 @@ final class ContentViewModel: ObservableObject {
 struct GitHubStyleChart: View {
     let keySummaries: [KeyPressSummary]
     
+    @State private var hoveredDate: Date?
+    @State private var mouseLocation: CGPoint = .zero
+    
     private let calendar = Calendar.current
     private let columns = 53 // ~1 year of weeks
     private let cellSize: CGFloat = 12
@@ -520,6 +523,22 @@ struct GitHubStyleChart: View {
         }
     }
     
+    private func tooltipText(for date: Date) -> String {
+        let dayStart = calendar.startOfDay(for: date)
+        let count = keySummaries.first { calendar.isDate($0.day, inSameDayAs: dayStart) }?.count ?? 0
+        
+        let formatter = DateFormatter()
+        formatter.dateFormat = "d MMM"
+        let dateString = formatter.string(from: date)
+        
+        let numberFormatter = NumberFormatter()
+        numberFormatter.numberStyle = .decimal
+        numberFormatter.groupingSeparator = " "
+        let formattedCount = numberFormatter.string(from: NSNumber(value: count)) ?? "\(count)"
+        
+        return "\(formattedCount) keys on \(dateString)"
+    }
+    
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: cellSpacing) {
@@ -531,6 +550,13 @@ struct GitHubStyleChart: View {
                                       colorForIntensity(intensityForDate(yearData[week][day]!)) : 
                                       Color.clear)
                                 .frame(width: cellSize, height: cellSize)
+                                .onHover { isHovering in
+                                    if isHovering, let date = yearData[week][day] {
+                                        hoveredDate = date
+                                    } else {
+                                        hoveredDate = nil
+                                    }
+                                }
                         }
                     }
                 }
@@ -552,6 +578,18 @@ struct GitHubStyleChart: View {
                 Text("More")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+            }
+        }
+        .overlay(alignment: .center) {
+            if let hoveredDate = hoveredDate {
+                Text(tooltipText(for: hoveredDate))
+                    .font(.title)
+                    .padding(6)
+                    .background(Color.primary.colorInvert())
+                    .foregroundColor(Color.primary)
+                    .cornerRadius(4)
+                    .shadow(radius: 4)
+                    .offset(x: 0, y: -90)
             }
         }
     }
@@ -647,49 +685,44 @@ struct ContentView: View {
                 } else {
                     VStack(alignment: .center, spacing: 50) {
                         HStack(alignment: .top, spacing: 100) {
-                            HStack(alignment: .top, spacing: 16) {
-                                Chart {
-                                    ForEach(viewModel.usageStats) { item in
-                                        SectorMark(
-                                            angle: .value("Duration", item.duration),
-                                            innerRadius: .ratio(0.4),
-                                            outerRadius: .ratio(1.0)
-                                        )
-                                        .foregroundStyle(Color.uniqueColor(for: item.appName))
-                                        .annotation(position: .overlay, alignment: .center) {
-                                            let pct = item.duration / totalDuration * 100
-                                            if pct >= pctThreshold {
-                                                VStack(spacing: 2) {
-                                                    Text(Time.formatDuration(seconds: item.duration))
-                                                        .font(.caption2)
-                                                    Text(String(format: "%.1f%%", pct))
-                                                        .font(.caption2)
-                                                        .foregroundStyle(.secondary)
-                                                }
+                            Chart {
+                                ForEach(viewModel.usageStats) { item in
+                                    SectorMark(
+                                        angle: .value("Duration", item.duration),
+                                        innerRadius: .ratio(0.4),
+                                        outerRadius: .ratio(1.0)
+                                    )
+                                    .foregroundStyle(Color.uniqueColor(for: item.appName))
+                                    .annotation(position: .overlay, alignment: .center) {
+                                        let pct = item.duration / totalDuration * 100
+                                        if pct >= pctThreshold {
+                                            VStack(spacing: 2) {
+                                                Text(Time.formatDuration(seconds: item.duration))
+                                                    .font(.caption2)
+                                                Text(String(format: "%.1f%%", pct))
+                                                    .font(.caption2)
+                                                    .foregroundStyle(.secondary)
                                             }
                                         }
                                     }
                                 }
-                                .frame(width: 450, height: 450)
-                                .chartLegend(.hidden)
-                                .overlay {
-                                    VStack(spacing: 4) {
-                                        Text("Time")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                        Text(totalDurationString)
-                                            .font(.title2)
-                                            .bold()
-                                    }
-                                }
-                                
-                                Button {
-                                    isDetailsSheetPresented = true
-                                } label: {
-                                    Image(systemName: "info.circle")
-                                }
-                                .help("View detailed app usage")
                             }
+                            .frame(width: 450, height: 450)
+                            .chartLegend(.hidden)
+                            .overlay {
+                                VStack(spacing: 4) {
+                                    Button {
+                                        isDetailsSheetPresented = true
+                                    } label: {
+                                        Image(systemName: "info.circle")
+                                    }
+                                    .help("View detailed app usage")
+                                    Text(totalDurationString)
+                                        .font(.title2)
+                                        .bold()
+                                }
+                            }
+                                
                             
                             Chart {
                                 ForEach(Array(viewModel.segmentCounts.prefix(10))) { item in
