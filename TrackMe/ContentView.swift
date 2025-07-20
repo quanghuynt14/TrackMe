@@ -513,13 +513,13 @@ struct GitHubStyleChart: View {
         if intensity == 0 {
             return Color.gray.opacity(0.1)
         } else if intensity < 0.25 {
-            return Color.green.opacity(0.3)
+            return Color.cyan.opacity(0.3)
         } else if intensity < 0.5 {
-            return Color.green.opacity(0.5)
+            return Color.cyan.opacity(0.5)
         } else if intensity < 0.75 {
-            return Color.green.opacity(0.7)
+            return Color.cyan.opacity(0.7)
         } else {
-            return Color.green
+            return Color.cyan
         }
     }
     
@@ -570,7 +570,7 @@ struct GitHubStyleChart: View {
                 HStack(spacing: 3) {
                     ForEach(0..<5, id: \.self) { level in
                         RoundedRectangle(cornerRadius: 2)
-                            .fill(level == 0 ? Color.gray.opacity(0.1) : Color.green.opacity(0.2 + Double(level) * 0.2))
+                            .fill(level == 0 ? Color.gray.opacity(0.1) : Color.cyan.opacity(0.2 + Double(level) * 0.2))
                             .frame(width: 10, height: 10)
                     }
                 }
