@@ -14,7 +14,14 @@ struct AutoLogController {
     let container: ModelContainer
 
     init() {
-        let schema = Schema([KeyLog.self, AppLog.self])
+        let schema = Schema([
+            KeyLog.self, 
+            AppLog.self, 
+            DailyStats.self, 
+            DailyAppUsage.self, 
+            DailyKeyPressSegment.self, 
+            ComputationJob.self
+        ])
         let url = URL.applicationSupportDirectory.appending(path: "autoLog.store")
         let configuration = ModelConfiguration(schema: schema, url: url)
         container = try! ModelContainer(for: schema, configurations: [configuration])

@@ -11,14 +11,18 @@ import SwiftData
 @main
 struct TrackMeApp: App {
     let autoLogController = AutoLogController.shared
-    
     let focusController = FocusController.shared
+    private let backgroundTaskService: BackgroundTaskService
     
     @StateObject private var loggingManager: LoggingManager
 
     init() {
         let autoLogContext = autoLogController.container.mainContext
         let focusContext = focusController.container.mainContext
+        
+        // Initialize background service
+        self.backgroundTaskService = BackgroundTaskService(context: autoLogContext)
+        
         _loggingManager = StateObject(wrappedValue: LoggingManager(
             autoLogContext: autoLogContext,
             focusContext: focusContext)

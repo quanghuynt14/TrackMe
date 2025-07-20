@@ -172,127 +172,390 @@ final class ContentViewModel: ObservableObject {
     @Published var segmentCounts: [AppSegmentCount] = []
     @Published var keySummaries: [KeyPressSummary] = []
     @Published var usageStats: [AppUsage] = []
+    @Published var yearlyKeySummaries: [KeyPressSummary] = [] // For GitHub-style chart
     @Published var isLoading: Bool = false
+    @Published var isRefreshing: Bool = false
 
     private var segmentCache = [TimeFrameKey: [AppSegmentCount]]()
     private var summaryCache = [TimeFrameKey: [KeyPressSummary]]()
     private var usageCache   = [TimeFrameKey: [AppUsage]]()
+    private var yearlyCache: [KeyPressSummary]? // Cache for yearly data
     
     private var context: ModelContext
+    private let computationService: DataComputationService
 
     init(context: ModelContext) {
         self.context = context
-        Task { await loadData() }
+        self.computationService = DataComputationService(context: context)
+        Task { 
+            await loadYearlyData()
+            await loadData() 
+        }
     }
 
     func loadData() async {
-        await MainActor.run {
-            isLoading = true
-        }
-        
-        // Add a small delay to ensure loading state is visible
-        try? await Task.sleep(nanoseconds: 100_000_000) // 0.1 seconds
-        
-        defer { 
-            Task { @MainActor in
-                isLoading = false
-            }
-        }
-
-        let frame = selectedFrame
-        var fromDate: Date? = nil, toDate: Date? = nil
-        if frame == .day {
-            let start = startOfDay(on: currentDay)
-            fromDate = start
-            toDate = Calendar.current.date(byAdding: .day, value: 1, to: start)
+        if selectedFrame == .day {
+            await loadDayData()
         } else {
-            fromDate = frame.startDate()
+            await loadAggregatedData()
         }
-
-        let key = TimeFrameKey(frame: frame, day: frame == .day ? fromDate : nil)
+    }
+    
+    private func loadDayData() async {
+        let targetDate = Calendar.current.startOfDay(for: currentDay)
+        
+        // Check cache first
+        let key = TimeFrameKey(frame: .day, day: targetDate)
         if let cachedSegs = segmentCache[key],
            let cachedSumm = summaryCache[key],
-           let usages = usageCache[key]{
+           let cachedUsages = usageCache[key] {
             await MainActor.run {
                 segmentCounts = cachedSegs
                 keySummaries = cachedSumm
-                usageStats = usages
+                usageStats = cachedUsages
             }
             return
         }
-
-        // build predicates
-        let activePred: Predicate<AppLog>? = fromDate.map { from in
-            toDate.map { to in
-                #Predicate<AppLog> { $0.timestamp >= from && $0.timestamp < to }
-            } ?? #Predicate<AppLog> { $0.timestamp >= from }
-        }
-
-        let keyPred: Predicate<KeyLog>? = fromDate.map { from in
-            toDate.map { to in
-                #Predicate<KeyLog> { $0.timestamp >= from && $0.timestamp < to }
-            } ?? #Predicate<KeyLog> { $0.timestamp >= from }
-        }
-
-        // fetch logs
-        let appLogs: [AppLog] = try! context.fetch(FetchDescriptor<AppLog>(predicate: activePred, sortBy: [SortDescriptor(\.timestamp)]))
-        let keyLogs: [KeyLog] = try! context.fetch(FetchDescriptor<KeyLog>(predicate: keyPred, sortBy: [SortDescriptor(\.timestamp)]))
-
-        // That’s exactly what you need to “carry over” the last app that was active before your time window begins.
-        var extendedAppLogs = appLogs
-        if let from = fromDate {
-            // You’ll get back at most one object—the single latest log just before your from date.
-            var prevFred = FetchDescriptor<AppLog>(
-                predicate: #Predicate<AppLog> { $0.timestamp < from },
-                sortBy: [SortDescriptor(\.timestamp, order: .reverse)]
-            )
-            
-            prevFred.fetchLimit = 1
-            
-            if let prevLog = try? context.fetch(prevFred).first {
-                // Make a “synthetic” AppLog at exactly fromDate
-                let carryOver = AppLog(timestamp: from, appName: prevLog.appName)
-
-                extendedAppLogs.insert(carryOver, at: 0)
+        
+        // Try to get pre-computed stats from database
+        let descriptor = FetchDescriptor<DailyStats>(
+            predicate: #Predicate<DailyStats> { $0.date == targetDate }
+        )
+        
+        do {
+            if let dailyStats = try context.fetch(descriptor).first {
+                // Use pre-computed data
+                let usages = dailyStats.appUsages.map { 
+                    AppUsage(appName: $0.appName, duration: $0.duration) 
+                }.sorted { $0.duration > $1.duration }
+                
+                let segments = dailyStats.keyPressSegments.map {
+                    AppSegmentCount(appName: $0.appName, count: $0.count)
+                }.sorted { $0.count > $1.count }
+                
+                let summary = [KeyPressSummary(day: targetDate, count: dailyStats.totalKeyPresses)]
+                
+                // Cache the results
+                segmentCache[key] = segments
+                summaryCache[key] = summary
+                usageCache[key] = usages
+                
+                await MainActor.run {
+                    usageStats = usages
+                    segmentCounts = segments
+                    keySummaries = summary
+                }
             } else {
-                let carryOver = AppLog(timestamp: from, appName: "Pre-Big Bang")
-
-                extendedAppLogs.insert(carryOver, at: 0)
+                // No pre-computed data available - compute and store for first time
+                try await computationService.computeStatsForDate(targetDate)
+                await loadDayData() // Reload with computed data
+            }
+        } catch {
+            print("Error loading day data: \(error)")
+            // Show empty data rather than fallback
+            await MainActor.run {
+                usageStats = []
+                segmentCounts = []
+                keySummaries = []
+            }
+        }
+    }
+    
+    private func loadAggregatedData() async {
+        guard let startDate = selectedFrame.startDate() else {
+            // Load all data - get all available daily stats
+            await loadAllTimeData()
+            return
+        }
+        
+        // Check cache first
+        let key = TimeFrameKey(frame: selectedFrame, day: nil)
+        if let cachedSegs = segmentCache[key],
+           let cachedSumm = summaryCache[key],
+           let cachedUsages = usageCache[key] {
+            await MainActor.run {
+                segmentCounts = cachedSegs
+                keySummaries = cachedSumm
+                usageStats = cachedUsages
+            }
+            return
+        }
+        
+        let endDate = Date()
+        let startOfDay = Calendar.current.startOfDay(for: startDate)
+        let endOfDay = Calendar.current.startOfDay(for: endDate)
+        
+        // Get all daily stats in range
+        let descriptor = FetchDescriptor<DailyStats>(
+            predicate: #Predicate<DailyStats> { $0.date >= startOfDay && $0.date <= endOfDay },
+            sortBy: [SortDescriptor(\.date)]
+        )
+        
+        do {
+            let dailyStats = try context.fetch(descriptor)
+            // Use whatever stored data we have (even if empty)
+            await aggregateAndDisplay(dailyStats: dailyStats, cacheKey: key)
+        } catch {
+            print("Error fetching aggregated data: \(error)")
+            // Show empty data
+            await MainActor.run {
+                usageStats = []
+                segmentCounts = []
+                keySummaries = []
+            }
+        }
+    }
+    
+    private func loadAllTimeData() async {
+        // Check cache first
+        let key = TimeFrameKey(frame: .all, day: nil)
+        if let cachedSegs = segmentCache[key],
+           let cachedSumm = summaryCache[key],
+           let cachedUsages = usageCache[key] {
+            await MainActor.run {
+                segmentCounts = cachedSegs
+                keySummaries = cachedSumm
+                usageStats = cachedUsages
+            }
+            return
+        }
+        
+        // For "All" time frame, get all available daily stats
+        let descriptor = FetchDescriptor<DailyStats>(
+            sortBy: [SortDescriptor(\.date)]
+        )
+        
+        do {
+            let allDailyStats = try context.fetch(descriptor)
+            // Use all the stored data we have (even if empty)
+            await aggregateAndDisplay(dailyStats: allDailyStats, cacheKey: key)
+        } catch {
+            print("Error fetching all-time data: \(error)")
+            // Show empty data
+            await MainActor.run {
+                usageStats = []
+                segmentCounts = []
+                keySummaries = []
+            }
+        }
+    }
+    
+    private func aggregateAndDisplay(dailyStats: [DailyStats], cacheKey: TimeFrameKey) async {
+        var appUsageMap: [String: TimeInterval] = [:]
+        var appKeyPressMap: [String: Int] = [:]
+        var dailySummaries: [KeyPressSummary] = []
+        
+        for stats in dailyStats {
+            dailySummaries.append(KeyPressSummary(day: stats.date, count: stats.totalKeyPresses))
+            
+            for usage in stats.appUsages {
+                appUsageMap[usage.appName, default: 0] += usage.duration
+                appKeyPressMap[usage.appName, default: 0] += usage.keyPresses
             }
         }
         
-        // compute
-        let segs = ChartDataService.countKeyPressesByApp(appLogs: extendedAppLogs, keyLogs: keyLogs)
-        let summ = ChartDataService.countKeyPressesPerDay(keyLogs: keyLogs)  // Changed from countKeyPressesPerMinute
-        let usages = ChartDataService.usageTimeByApp(appLogs: extendedAppLogs)
-
-        // cache them
-        segmentCache[key] = segs
-        summaryCache[key] = summ
-        usageCache[key] = usages
+        let usages = appUsageMap.map { 
+            AppUsage(appName: $0.key, duration: $0.value) 
+        }.sorted { $0.duration > $1.duration }
         
-        // publish
+        let segments = appKeyPressMap.map {
+            AppSegmentCount(appName: $0.key, count: $0.value)
+        }.sorted { $0.count > $1.count }
+        
+        let sortedSummaries = dailySummaries.sorted { $0.day < $1.day }
+        
+        // Cache the results
+        segmentCache[cacheKey] = segments
+        summaryCache[cacheKey] = sortedSummaries
+        usageCache[cacheKey] = usages
+        
         await MainActor.run {
-            segmentCounts = segs
-            keySummaries = summ
             usageStats = usages
+            segmentCounts = segments
+            keySummaries = sortedSummaries
         }
     }
-
+    
     func shiftCurrentDay(by days: Int) {
         currentDay = Calendar.current.date(byAdding: .day, value: days, to: currentDay)!
         Task { await loadData() }
     }
     
     func refreshData() async {
-        segmentCache.removeAll()
-        summaryCache.removeAll()
-        usageCache.removeAll()
-        await loadData()
+        await MainActor.run {
+            isRefreshing = true
+        }
+        
+        defer {
+            Task { @MainActor in
+                isRefreshing = false
+            }
+        }
+        
+        do {
+            // Re-compute today's data if we're viewing today
+            if selectedFrame == .day && Calendar.current.isDateInToday(currentDay) {
+                try await computationService.computeStatsForDate(currentDay)
+            }
+            
+            // Clear all caches to force reload
+            segmentCache.removeAll()
+            summaryCache.removeAll()
+            usageCache.removeAll()
+            yearlyCache = nil
+            
+            await loadYearlyData()
+            await loadData()
+        } catch {
+            print("Error refreshing data: \(error)")
+        }
+    }
+    
+    private func loadYearlyData() async {
+        // Return cached data if available
+        if let cached = yearlyCache {
+            await MainActor.run {
+                yearlyKeySummaries = cached
+            }
+            return
+        }
+        
+        // Get yearly data from stored daily stats only
+        let endDate = Date()
+        let startDate = Calendar.current.date(byAdding: .day, value: -365, to: endDate) ?? endDate
+        
+        let yearlyStatsDescriptor = FetchDescriptor<DailyStats>(
+            predicate: #Predicate<DailyStats> { $0.date >= startDate && $0.date <= endDate },
+            sortBy: [SortDescriptor(\.date)]
+        )
+        
+        do {
+            let yearlyDailyStats = try context.fetch(yearlyStatsDescriptor)
+            
+            // Use stored daily stats to build yearly summaries (even if empty)
+            let yearlySummaries = yearlyDailyStats.map { 
+                KeyPressSummary(day: $0.date, count: $0.totalKeyPresses) 
+            }
+            
+            // Cache the result
+            yearlyCache = yearlySummaries
+            
+            await MainActor.run {
+                yearlyKeySummaries = yearlySummaries
+            }
+        } catch {
+            print("Error fetching yearly stored stats: \(error)")
+            // Show empty data
+            await MainActor.run {
+                yearlyKeySummaries = []
+            }
+        }
     }
 
     private func startOfDay(on date: Date) -> Date {
         Calendar.current.startOfDay(for: date)
+    }
+}
+
+// MARK: — GitHub Style Chart
+struct GitHubStyleChart: View {
+    let keySummaries: [KeyPressSummary]
+    
+    private let calendar = Calendar.current
+    private let columns = 53 // ~1 year of weeks
+    private let cellSize: CGFloat = 12
+    private let cellSpacing: CGFloat = 2
+    
+    private var yearData: [[Date?]] {
+        let endDate = Date()
+        let startDate = calendar.date(byAdding: .day, value: -365, to: endDate) ?? endDate
+        
+        var weeks: [[Date?]] = Array(repeating: Array(repeating: nil, count: 7), count: columns)
+        var currentDate = startDate
+        
+        // Find the starting week offset
+        let weekday = calendar.component(.weekday, from: startDate)
+        let startingWeekday = weekday == 1 ? 6 : weekday - 2 // Convert to Mon=0, Sun=6
+        
+        var week = 0
+        var day = startingWeekday
+        
+        while currentDate <= endDate && week < columns {
+            if day < 7 {
+                weeks[week][day] = currentDate
+            }
+            
+            currentDate = calendar.date(byAdding: .day, value: 1, to: currentDate) ?? currentDate
+            day += 1
+            
+            if day >= 7 {
+                day = 0
+                week += 1
+            }
+        }
+        
+        return weeks
+    }
+    
+    private func intensityForDate(_ date: Date) -> Double {
+        let dayStart = calendar.startOfDay(for: date)
+        let count = keySummaries.first { calendar.isDate($0.day, inSameDayAs: dayStart) }?.count ?? 0
+        
+        // Normalize to 0-1 scale based on max count
+        let maxCount = keySummaries.map(\.count).max() ?? 1
+        return Double(count) / Double(maxCount)
+    }
+    
+    private func colorForIntensity(_ intensity: Double) -> Color {
+        if intensity == 0 {
+            return Color.gray.opacity(0.1)
+        } else if intensity < 0.25 {
+            return Color.green.opacity(0.3)
+        } else if intensity < 0.5 {
+            return Color.green.opacity(0.5)
+        } else if intensity < 0.75 {
+            return Color.green.opacity(0.7)
+        } else {
+            return Color.green
+        }
+    }
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: cellSpacing) {
+                ForEach(0..<columns, id: \.self) { week in
+                    VStack(spacing: cellSpacing) {
+                        ForEach(0..<7, id: \.self) { day in
+                            RoundedRectangle(cornerRadius: 2)
+                                .fill(yearData[week][day] != nil ? 
+                                      colorForIntensity(intensityForDate(yearData[week][day]!)) : 
+                                      Color.clear)
+                                .frame(width: cellSize, height: cellSize)
+                        }
+                    }
+                }
+            }
+            
+            HStack {
+                Text("Less")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                
+                HStack(spacing: 3) {
+                    ForEach(0..<5, id: \.self) { level in
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(level == 0 ? Color.gray.opacity(0.1) : Color.green.opacity(0.2 + Double(level) * 0.2))
+                            .frame(width: 10, height: 10)
+                    }
+                }
+                
+                Text("More")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                
+                Spacer()
+            }
+        }
     }
 }
 
@@ -384,7 +647,7 @@ struct ContentView: View {
                     }
                     .frame(width: 1100, height: 500)
                 } else {
-                    VStack(alignment: .leading, spacing: 100) {
+                    VStack(alignment: .leading, spacing: 50) {
                         HStack(alignment: .top, spacing: 100) {
                             HStack(alignment: .top, spacing: 16) {
                                 Chart {
@@ -448,23 +711,9 @@ struct ContentView: View {
                             .frame(width: 500, height: 450)
                         }
                     
-                        if viewModel.selectedFrame != .day {
-                            Chart {
-                                ForEach(viewModel.keySummaries) { summary in
-                                    BarMark(
-                                        x: .value("Date", summary.day, unit: .day),
-                                        y: .value("Count", summary.count)
-                                    )
-                                }
-                            }
-                            .frame(height: 400)
-                            .chartXAxis {
-                                AxisMarks(values: .stride(by: .day)) { value in
-                                    AxisGridLine()
-                                    AxisTick()
-                                    AxisValueLabel(format: .dateTime.day().month(.abbreviated))
-                                }
-                            }
+                        VStack(alignment: .leading) {
+                            GitHubStyleChart(keySummaries: viewModel.yearlyKeySummaries)
+                                .frame(height: 200)
                         }
                     }
                 }
@@ -480,9 +729,15 @@ struct ContentView: View {
                 Button {
                     Task { await viewModel.refreshData() }
                 } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
+                    if viewModel.isRefreshing {
+                        ProgressView()
+                            .scaleEffect(0.8)
+                    } else {
+                        Label("Refresh", systemImage: "arrow.clockwise")
+                    }
                 }
-                .help("Refresh data")
+                .disabled(viewModel.isRefreshing)
+                .help("Refresh and re-compute data")
             }
         }
         .sheet(isPresented: $isDetailsSheetPresented) {
