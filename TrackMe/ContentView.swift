@@ -437,6 +437,8 @@ final class ContentViewModel: ObservableObject {
                 KeyPressSummary(day: $0.date, count: $0.totalKeyPresses) 
             }
             
+            print(yearlySummaries)
+            
             // Cache the result
             yearlyCache = yearlySummaries
             
@@ -470,33 +472,47 @@ struct GitHubStyleChart: View {
     private let cellSpacing: CGFloat = 2
     
     private var yearData: [[Date?]] {
-        let endDate = Date()
-        let startDate = calendar.date(byAdding: .day, value: -365, to: endDate) ?? endDate
-        
+        let today = Date()
+        let endDate = calendar.startOfDay(for: today)
+        let startDate = calendar.date(byAdding: .day, value: -364, to: endDate) ?? endDate // 365 days total including today
+    
         var weeks: [[Date?]] = Array(repeating: Array(repeating: nil, count: 7), count: columns)
-        var currentDate = startDate
+    
+        // Calculate how many days from start to end
+        let totalDays = calendar.dateComponents([.day], from: startDate, to: endDate).day! + 1
+    
+        // Fill the grid from right to left, bottom to top (like GitHub)
+        var currentDate = endDate
+        var remainingDays = totalDays
+    
+        // Start from the last week (rightmost column)
+        for weekIndex in stride(from: columns - 1, through: 0, by: -1) {
+            guard remainingDays > 0 else { break }
         
-        // Find the starting week offset
-        let weekday = calendar.component(.weekday, from: startDate)
-        let startingWeekday = weekday == 1 ? 6 : weekday - 2 // Convert to Mon=0, Sun=6
+            // Find what day of week today is (convert Sunday=1 to Sunday=6, Monday=0)
+            let todayWeekday = calendar.component(.weekday, from: currentDate)
+            let todayDayIndex = todayWeekday == 1 ? 6 : todayWeekday - 2
         
-        var week = 0
-        var day = startingWeekday
-        
-        while currentDate <= endDate && week < columns {
-            if day < 7 {
-                weeks[week][day] = currentDate
-            }
-            
-            currentDate = calendar.date(byAdding: .day, value: 1, to: currentDate) ?? currentDate
-            day += 1
-            
-            if day >= 7 {
-                day = 0
-                week += 1
+            // For the current week (rightmost), start from today and go backwards
+            if weekIndex == columns - 1 {
+                // Fill from today backwards to beginning of week
+                for dayIndex in stride(from: todayDayIndex, through: 0, by: -1) {
+                    guard remainingDays > 0 else { break }
+                    weeks[weekIndex][dayIndex] = currentDate
+                    currentDate = calendar.date(byAdding: .day, value: -1, to: currentDate) ?? currentDate
+                    remainingDays -= 1
+                }
+            } else {
+                // For other weeks, fill Sunday to Saturday (6 to 0)
+                for dayIndex in stride(from: 6, through: 0, by: -1) {
+                    guard remainingDays > 0 else { break }
+                    weeks[weekIndex][dayIndex] = currentDate
+                    currentDate = calendar.date(byAdding: .day, value: -1, to: currentDate) ?? currentDate
+                    remainingDays -= 1
+                }
             }
         }
-        
+    
         return weeks
     }
     
