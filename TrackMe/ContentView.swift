@@ -143,18 +143,14 @@ struct ChartDataService {
         if let last = appLogs.last {
             let end: Date
             if Calendar.current.isDateInToday(last.timestamp) {
-                end = Date()
+                end = Date() // Current time for today
             } else {
-                end = Calendar.current.date(
-                    bySettingHour: 23,
-                    minute: 59,
-                    second: 59,
-                    of: last.timestamp
-                )!
+                // Use the start of the NEXT day instead of 23:59:59
+                let dayOfLastLog = Calendar.current.startOfDay(for: last.timestamp)
+                end = Calendar.current.date(byAdding: .day, value: 1, to: dayOfLastLog)!
             }
             
             let interval = end.timeIntervalSince(last.timestamp)
-            
             totals[last.appName, default: 0] += max(0, interval)
             
         }
@@ -454,6 +450,58 @@ final class ContentViewModel: ObservableObject {
 
     private func startOfDay(on date: Date) -> Date {
         Calendar.current.startOfDay(for: date)
+    }
+    
+    func recomputeAllDailyStats() async {
+        await MainActor.run {
+            isRefreshing = true
+        }
+        
+        defer {
+            Task { @MainActor in
+                isRefreshing = false
+            }
+        }
+        
+        do {
+            // Get all existing DailyStats to find the date range
+            let allStatsDescriptor = FetchDescriptor<DailyStats>(
+                sortBy: [SortDescriptor(\.date)]
+            )
+            let existingStats = try context.fetch(allStatsDescriptor)
+            
+            if !existingStats.isEmpty {
+                let startDate = existingStats.first!.date
+                let endDate = existingStats.last!.date
+                
+                // Delete all existing DailyStats
+                for stats in existingStats {
+                    context.delete(stats)
+                }
+                try context.save()
+                
+                // Recompute all dates in the range
+                var currentDate = startDate
+                while currentDate <= endDate {
+                    try await computationService.computeStatsForDate(currentDate)
+                    currentDate = Calendar.current.date(byAdding: .day, value: 1, to: currentDate)!
+                }
+                
+                print("Recomputed DailyStats for \(existingStats.count) days")
+            }
+            
+            // Clear all caches to force reload with new data
+            segmentCache.removeAll()
+            summaryCache.removeAll()
+            usageCache.removeAll()
+            yearlyCache = nil
+            
+            await loadYearlyData()
+            await loadData()
+            
+        } catch {
+            print("Error recomputing all daily stats: \(error)")
+        }
     }
 }
 
@@ -788,6 +836,16 @@ struct ContentView: View {
                 .disabled(viewModel.isRefreshing)
                 .help("Refresh and re-compute data")
             }
+            
+            // ToolbarItem(placement: .primaryAction) {
+            //     Button {
+            //         Task { await viewModel.recomputeAllDailyStats() }
+            //     } label: {
+            //         Label("Recompute All", systemImage: "arrow.triangle.2.circlepath")
+            //     }
+            //     .disabled(viewModel.isRefreshing)
+            //     .help("Recompute all daily stats")
+            // }
         }
         .sheet(isPresented: $isDetailsSheetPresented) {
             AppDetailsView(
