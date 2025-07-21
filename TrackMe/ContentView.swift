@@ -437,8 +437,6 @@ final class ContentViewModel: ObservableObject {
                 KeyPressSummary(day: $0.date, count: $0.totalKeyPresses) 
             }
             
-            print(yearlySummaries)
-            
             // Cache the result
             yearlyCache = yearlySummaries
             
